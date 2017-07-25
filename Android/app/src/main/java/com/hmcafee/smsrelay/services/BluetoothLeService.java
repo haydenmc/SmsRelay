@@ -25,19 +25,27 @@ import android.support.annotation.Nullable;
 import android.telephony.SmsMessage;
 import android.util.Log;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.UUID;
+
+import static android.bluetooth.BluetoothGatt.GATT_SUCCESS;
+import static android.bluetooth.BluetoothGattDescriptor.PERMISSION_READ;
+import static android.bluetooth.BluetoothGattDescriptor.PERMISSION_WRITE;
 
 public class BluetoothLeService extends Service {
     // Constants
     private static final String TAG = BluetoothLeService.class.getSimpleName();
     private static final UUID SERVICE_UUID = UUID.fromString("a031c3a4-7928-49a9-89da-075e8b17f307");
     private static final UUID LASTRECEIVEDDATETIME_CHARACTERISTIC_UUID = UUID.fromString("4ba0a84b-3a2c-4cc0-b235-d7bacf24adbf");
+    private static final UUID DESCRIPTOR_CONFIG_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     // Private members
     private BluetoothManager mBluetoothManager;
     private BluetoothGattServer mBluetoothGattServer;
     private BluetoothGattService mBluetoothGattService;
     private BluetoothGattCharacteristic mLastReceivedDateTimeCharacteristic;
+    private ArrayList<BluetoothDevice> mRegisteredBluetoothDevices = new ArrayList<BluetoothDevice>();
     private BluetoothGattServerCallback mGattServerCallback = new BluetoothGattServerCallback() {
         @Override
         public void onConnectionStateChange(BluetoothDevice device, int status, int newState) {
@@ -55,7 +63,7 @@ public class BluetoothLeService extends Service {
         public void onCharacteristicReadRequest(BluetoothDevice device, int requestId, int offset, BluetoothGattCharacteristic characteristic) {
             super.onCharacteristicReadRequest(device, requestId, offset, characteristic);
             Log.d(TAG, "GATT onCharacteristicReadRequest: " + characteristic.getUuid().toString());
-            mBluetoothGattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, characteristic.getValue());
+            mBluetoothGattServer.sendResponse(device, requestId, GATT_SUCCESS, 0, characteristic.getValue());
         }
 
         @Override
@@ -68,22 +76,39 @@ public class BluetoothLeService extends Service {
         @Override
         public void onDescriptorReadRequest(BluetoothDevice device, int requestId, int offset, BluetoothGattDescriptor descriptor) {
             super.onDescriptorReadRequest(device, requestId, offset, descriptor);
+            Log.d(TAG, "GATT onDescriptorReadRequest: " + descriptor.getUuid().toString());
         }
 
         @Override
         public void onDescriptorWriteRequest(BluetoothDevice device, int requestId, BluetoothGattDescriptor descriptor, boolean preparedWrite, boolean responseNeeded, int offset, byte[] value) {
             super.onDescriptorWriteRequest(device, requestId, descriptor, preparedWrite, responseNeeded, offset, value);
-            mBluetoothGattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
+            Log.d(TAG, "GATT onDescriptorWriteRequest: " + descriptor.getUuid().toString() + ", value: " + value.toString());
+            if (descriptor.getUuid().equals(DESCRIPTOR_CONFIG_UUID)) {
+                if (Arrays.equals(value, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
+                    if (!mRegisteredBluetoothDevices.contains(device)) {
+                        mRegisteredBluetoothDevices.add(device);
+                    }
+                } else if (Arrays.equals(value, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
+                    if (mRegisteredBluetoothDevices.contains(device)) {
+                        mRegisteredBluetoothDevices.remove(device);
+                    }
+                }
+                if (responseNeeded) {
+                    mBluetoothGattServer.sendResponse(device, requestId, GATT_SUCCESS, 0, value);
+                }
+            }
         }
 
         @Override
         public void onExecuteWrite(BluetoothDevice device, int requestId, boolean execute) {
             super.onExecuteWrite(device, requestId, execute);
+            Log.d(TAG, "GATT onExecuteWrite");
         }
 
         @Override
         public void onNotificationSent(BluetoothDevice device, int status) {
             super.onNotificationSent(device, status);
+            Log.d(TAG, "GATT onNotificationSent");
         }
     };
 
@@ -112,6 +137,16 @@ public class BluetoothLeService extends Service {
         }
     };
 
+    private void notifyDevicesOfCharacteristicChange(ArrayList<BluetoothDevice> devices, BluetoothGattCharacteristic characteristic) {
+        for (BluetoothDevice device : devices) {
+            try {
+                mBluetoothGattServer.notifyCharacteristicChanged(device, characteristic, false);
+            } catch (Exception e) {
+                Log.e(TAG, "Exception while notifying device: " + e.getMessage());
+            }
+        }
+    }
+
     private void handleSms(SmsMessage message) {
         Log.d(TAG, "Handling new SMS message from " + message.getOriginatingAddress());
         if (mLastReceivedDateTimeCharacteristic != null) {
@@ -120,6 +155,7 @@ public class BluetoothLeService extends Service {
                 BluetoothGattCharacteristic.FORMAT_UINT32,
                 0
             );
+            notifyDevicesOfCharacteristicChange(mRegisteredBluetoothDevices, mLastReceivedDateTimeCharacteristic);
         }
     }
 
@@ -146,6 +182,7 @@ public class BluetoothLeService extends Service {
                 BluetoothGattCharacteristic.PROPERTY_NOTIFY | BluetoothGattCharacteristic.PROPERTY_READ,
                 BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED_MITM
             );
+        mLastReceivedDateTimeCharacteristic.addDescriptor(new BluetoothGattDescriptor(DESCRIPTOR_CONFIG_UUID, PERMISSION_READ | PERMISSION_WRITE));
         mBluetoothGattService.addCharacteristic(mLastReceivedDateTimeCharacteristic);
         mBluetoothGattServer.addService(mBluetoothGattService);
         Log.i(TAG, "Started GATT server.");
