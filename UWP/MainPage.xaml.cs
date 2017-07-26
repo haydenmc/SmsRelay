@@ -26,5 +26,10 @@ namespace SmsRelay
         {
             this.InitializeComponent();
         }
+
+        private async void OnLoaded(object sender, RoutedEventArgs e)
+        {
+            await connectContentDialog.ShowAsync();
+        }
     }
 }
